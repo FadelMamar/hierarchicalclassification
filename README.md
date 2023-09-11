@@ -29,7 +29,7 @@ For any addtional question, send me an email: fadel.seydou@gmail.com.
 
 ## Training
 - In the terminal, move to ```./src```
-- Create a free account on [https://wandb.ai/]weight&biases to log training metrics
+- Create a free account on [weight&biases](https://wandb.ai/) to log training metrics
 - Initialize weight&biases in this working directory as follows: ```wandb login``` and provide API key.
 - Open ```train.sh``` and update the parameters. All parameters are explained in ```args.py```
 - Run ```bash train.sh```
