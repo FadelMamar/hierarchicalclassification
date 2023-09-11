@@ -1,0 +1,33 @@
+﻿label;name
+1;forest
+3;forest formation
+4;savanna formation
+5;mangrove
+49;wooded sandbank vegetation
+10;non forest natural formation
+11;wetland
+12;grassland
+29;rocky outcrop
+13;other non forest formations
+14;farming
+15;pasture
+18;agriculture
+19;temporary crop
+41;other temporary crops
+39;soy bean
+20;sugar cane
+40;rice
+36;perennial crops
+46;coffee
+47;citrus
+48;other perennial crops
+9;forest plantation
+21;mosaic agriculture and pasture
+22;non vegetated area
+23;beach dune and sand
+24;urban area
+30;mining
+25;other vegetated areas
+26;water
+33;river lake and ocean
+31;aquaculture
