@@ -20,11 +20,11 @@ For any addtional question, send me an email: fadel.seydou@gmail.com.
 
 ## Data preparation
 - Download the following files and move them to ```./data```:
-    - [https://1drv.ms/u/s!ArkwIkcloZytkdd_Dae2862tU5KSNA?e=E55c5w] brasil_coverage_2018_labelDist_2.csv
-    - [https://1drv.ms/i/s!ArkwIkcloZytjcF6JAnR2pBZgJ41vw?e=QCt5PQ] brasil_coverage_2018.tif
+    - [brasil_coverage_2018_labelDist_2.csv](https://1drv.ms/u/s!ArkwIkcloZytkdd_Dae2862tU5KSNA?e=E55c5w)
+    - [brasil_coverage_2018.tif](https://1drv.ms/i/s!ArkwIkcloZytjcF6JAnR2pBZgJ41vw?e=QCt5PQ)
 - Move to directory ```./src```
 - Run ```python datapreparation.py``` to create needed files for downloading data
-- Initialize to Google earth engine API: [https://developers.google.com/earth-engine/guides/python_install#authentication] here
+- Initialize to Google earth engine API: [more here](https://developers.google.com/earth-engine/guides/python_install#authentication)
 - Run ```bash download_data.sh```
 
 ## Training
