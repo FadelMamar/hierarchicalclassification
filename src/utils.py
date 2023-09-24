@@ -31,25 +31,51 @@ waterbodies=[26,33,31]
 
 
 def get_coordinates(data,window:Window):
+    """Get data window bounds
 
+    Args:
+        data (rasterio.DatasetReader): GeoTiFF reading handler from Rasterio
+        window (Window): window of data to return
+
+    Returns:
+        tuple: (x_min, y_min, x_max, y_max)
+    """
     x_min, y_min, x_max, y_max = data.window_bounds(window) 
 
     return x_min, y_min, x_max, y_max
 
 def get_tile_label(unique_vals:list,unique_counts:list,threshold=0.6):
+    """Get tile label. Assign the majority label within a tile given a desired threshold.
+
+    Args:
+        unique_vals (list): labels in tile
+        unique_counts (list): counts of each label
+        threshold (float, optional): thresolding. Defaults to 0.6.
+
+    Returns:
+        int: label assigned to tile
+    """
 
     sum_counts = sum(unique_counts)
     label = -999
 
     for ind in range(len(unique_vals)):
-        if unique_counts[ind]/sum_counts >= 0.6:
+        if unique_counts[ind]/sum_counts >= threshold:
             label = unique_vals[ind]
             break
 
     return label
 
 def parse_geotif(labels_path:Path,tilesize=38):
+    """Read a GeoTiFF and save tile labels values and counts in a pickle file as a dictionary ``labels_dict``.
 
+    Args:
+        labels_path (Path): path to GeoTiFF file
+        tilesize (int, optional): height and width of tile in pixels. Defaults to 38.
+
+    Returns:
+        tuple: (labels_dict,save_path)
+    """
     #labels_path = Path(f"../data/brasil_coverage_{year}.tif")
     data = rasterio.open(labels_path)
 
@@ -77,7 +103,16 @@ def parse_geotif(labels_path:Path,tilesize=38):
     return labels_dict,save_path
 
 def get_labeldistribution(parsed_tiles:dict,labels_path:Path,majority_threshold=0.6):
+    """Get label distribution within a GeoTiFF. Returns the labels distribution in a pd.DataFrame and the path ``save_path`` where it was saved.
 
+    Args:
+        parsed_tiles (dict): dictionary of labels counts and values computed by ``parse_geotif``
+        labels_path (Path): path to GeoTiFF
+        majority_threshold (float, optional): _description_. Defaults to 0.6.
+
+    Returns:
+        tuple: (label distribution in pd.DataFrame save_path)
+    """
     data = rasterio.open(labels_path)
 
     # # # Get distribution of labels
@@ -106,8 +141,17 @@ def get_labeldistribution(parsed_tiles:dict,labels_path:Path,majority_threshold=
 
     return df_labelsDist,save_path
 
-def get_split(block_indices:list,schema,num_blocks_per_tile=1):
-    
+def get_split(block_indices:list,schema:np.ndarray,num_blocks_per_tile=1):
+    """Assign a block to the training, validation or test set. A block is a portion of a tile.
+
+    Args:
+        block_indices (list): x,y indices of a block
+        schema (np.ndarray): splitting schema
+        num_blocks_per_tile (int, optional): number of blocks per tile. Defaults to 1.
+
+    Returns:
+        str: split value
+    """
     x,y = block_indices
     height,width = schema.shape
 
@@ -120,17 +164,27 @@ def train_test_split(label_distribution:pd.DataFrame,
                      num_blocks_per_tile=5,
                      splits_by_block=None,
                      labeling_schema=None):
-        
+    """Assign every block to a training, validation or test set
+
+    Args:
+        label_distribution (pd.DataFrame): label distribution computed by ``get_labeldistribution``
+        num_blocks_per_tile (int, optional): number of blocks per tile. Defaults to 5.
+        splits_by_block (pd.DataFrame, optional): pd.DataFrame with block bounds and assigned split. Defaults to None.
+        labeling_schema (np.ndarray, optional): labeling schema defined as a matrix. Defaults to None.
+
+    Returns:
+        pd.DataFrame: contains block bounds and assign set
+    """
     label_distribution['train_test_split'] = -999 # no split attributed
 
     if splits_by_block is None:
 
         # define labeling schema
         if labeling_schema is None:
-            labeling_schema = schema = np.array([[0,2,1,0,0],
-                                                [2,1,0,0,0],
-                                                [1,0,0,0,2],
-                                                [0,0,0,2,1]])
+            labeling_schema = np.array([[0,2,1,0,0],
+                                        [2,1,0,0,0],
+                                        [1,0,0,0,2],
+                                        [0,0,0,2,1]])
         
         tilesize=38 # 1km*1km
         #-- get indexing of blocks   
@@ -161,8 +215,17 @@ def train_test_split(label_distribution:pd.DataFrame,
         
     return label_distribution
 
-def get_samplingweight(x,y,labelling_schema):
+def get_samplingweight(x:int,y:int,labelling_schema:np.ndarray):
+    """Compute sampling weight for every block in a set. It computes from the PDF of a gaussina distribution centered on the tile
 
+    Args:
+        x (int): x index of block in a tile
+        y (int): y index of block in a tile
+        labelling_schema (np.ndarray): labeling schema
+
+    Returns:
+        _type_: _description_
+    """
     height,width = labelling_schema.shape
 
     y,x = y%height,x%width
@@ -173,7 +236,16 @@ def get_samplingweight(x,y,labelling_schema):
     return 0.5*(prob_y+prob_x)
 
 def get_targetdistribution(labelDistribution:pd.DataFrame,min_examples=100,ratio=3):
+    """Computes the distributin of the wanted training, validation and test sets used for model training and evaluation.
 
+    Args:
+        labelDistribution (pd.DataFrame): label distribution from ``train_test_split``
+        min_examples (int, optional): minimum nuber of desired samples per label. Defaults to 100.
+        ratio (int, optional): set how big the training set should be compared to validation and test sets. Defaults to 3 to have 60/20/20 splits.
+
+    Returns:
+        pd.DataFrame: target distribution
+    """
     labelDistribution = labelDistribution[labelDistribution.tile_label > 0] # get rid of -999 and 0
 
     target_distribution = labelDistribution.groupby(by=['train_test_split','tile_label']).count()[['xmin']]
@@ -211,8 +283,19 @@ def get_targetdistribution(labelDistribution:pd.DataFrame,min_examples=100,ratio
 
 def get_sample(target_distribution:pd.DataFrame,
                     source_data:pd.DataFrame,
-                    labelling_schema,plot=True):
+                    labelling_schema:np.ndarray,
+                    plot=True):
+    """Samples data from a source label distribution given a target distribution
 
+    Args:
+        target_distribution (pd.DataFrame): target distribution
+        source_data (pd.DataFrame): source distribution
+        labelling_schema (np.ndarray): labelling schema
+        plot (bool, optional): states whether or not to plot the distributions. Defaults to True.
+
+    Returns:
+        pd.DataFrame: sampled data
+    """
     print('Labelling schema: \n', labelling_schema )
 
     # copy
@@ -256,7 +339,14 @@ def get_sample(target_distribution:pd.DataFrame,
     return data[data.selected == True]
 
 def get_dataset_labels(label_hierarchy_path:Path) -> np.ndarray:
+    """Get all labels within the dataset
 
+    Args:
+        label_hierarchy_path (Path): path to label hierarchy csv
+
+    Returns:
+        np.ndarray: labels of land use and  land cover classes
+    """
     label_hierarchy = pd.read_csv(label_hierarchy_path,sep=';')
     all_labels = []
 
@@ -268,11 +358,20 @@ def get_dataset_labels(label_hierarchy_path:Path) -> np.ndarray:
     return all_labels
 
 def get_label(all_labels:np.ndarray,leafnode_label:int,labelhiearchy:pd.DataFrame) -> np.ndarray:
-    
+    """Get the labels on a given root-to-node path defined by the leafnode label. It follwos the label hierarchy graph
+
+    Args:
+        all_labels (np.ndarray): all labels from ``get_dataset_labels``
+        leafnode_label (int): leaf node with no descendants
+        labelhiearchy (pd.DataFrame): label hierarchy indexed on the leaf-label nodes
+
+    Returns:
+        np.ndarray: binary array characterizing the labels on a given a roo-to-node path
+    """
     if leafnode_label in labelhiearchy.index:
         path_in_hierarchy = set(labelhiearchy.loc[leafnode_label].to_list())
 
-    else: # parent node != leaf
+    else: # no parent
         path_in_hierarchy = [leafnode_label]
 
     all_labels = all_labels
@@ -286,7 +385,14 @@ def get_label(all_labels:np.ndarray,leafnode_label:int,labelhiearchy:pd.DataFram
     return labels
 
 def get_level_indices(label_hierarchy_path:Path):
+    """Get indices of labels at every level of the label hierarchy graph
 
+    Args:
+        label_hierarchy_path (Path): path to label hierarchy csv
+
+    Returns:
+        tuple: indices_level1, indices_level2, indices_level3, indices_level4, indices_leaf
+    """
     #- load labels
     all_labels = get_dataset_labels(label_hierarchy_path)
     label_hierarchy = pd.read_csv(label_hierarchy_path,sep=';')
@@ -315,7 +421,15 @@ def get_level_indices(label_hierarchy_path:Path):
 
 def build_hierarchy_graph(label_hierarchy_path:Path=Path("../data/labelhierarchy.csv"),
                           nodeLabel_as_target=False):
-    
+    """Builds a label hierarchy graph
+
+    Args:
+        label_hierarchy_path (Path, optional): Defaults to Path("../data/labelhierarchy.csv").
+        nodeLabel_as_target (bool, optional): states whether the nodes should be encoded using their root-to-node path. Defaults to False.
+
+    Returns:
+        tuple: (graph, label mapping function)
+    """
     all_labels = get_dataset_labels(label_hierarchy_path)
     label_hierarchy = pd.read_csv(label_hierarchy_path,sep=';')
 
@@ -329,7 +443,6 @@ def build_hierarchy_graph(label_hierarchy_path:Path=Path("../data/labelhierarchy
     graph = nx.Graph()
     nodes = [(mapping_func(a), {'label':a}) for a in all_labels]
     graph.add_nodes_from(nodes)
-
     cols= label_hierarchy.columns.to_list()
     for i in range(1,len(cols)-1):
         level_i,level_j = cols[i],cols[i+1]
@@ -346,27 +459,50 @@ def build_hierarchy_graph(label_hierarchy_path:Path=Path("../data/labelhierarchy
     return graph,mapping_func
 
 def tree_distance(graph:nx.Graph,
-                  source,destination,
+                  source:int,
+                  destination:int,
                   mapping_func=lambda x:x):
+    """Tree distance defined as the number of edges in the shortest path
 
+    Args:
+        graph (nx.Graph): label hierarchy graph
+        source (int): source node
+        destination (int): destination node
+        mapping_func (function, optional): a function that maps a node label to its encoding in the graph. Defaults to lambdax:x.
+
+    Returns:
+        _type_: _description_
+    """
     d = len(nx.shortest_path(graph,
                          mapping_func(source),
                          mapping_func(destination))) - 1
     return d
 
 def reverse_label_encoding(onehot_label:np.ndarray,all_labels:np.ndarray) -> np.ndarray:
+    """Revert the onehot label encoding
 
+    Args:
+        onehot_label (np.ndarray): label encoding
+        all_labels (np.ndarray): all labels in the dataets from ``get_dataset_labels``
+
+    Returns:
+        np.ndarray: _description_
+    """
     assert all_labels.shape[0] in onehot_label.shape
 
     return all_labels.reshape((1,-1)) * onehot_label
 
 def get_ancestry_matrix(label_hierarchy_path : Path = Path("../data/labelhierarchy.csv")):
+    """Get ancestry matrix of the label hierarchy graph. It provides the ancestors of every label in the hierarchy.
 
+    Args:
+        label_hierarchy_path (Path, optional): path to label hierarchy. Defaults to Path("../data/labelhierarchy.csv").
+
+    Returns:
+        tuple: (ancestry matrix, {label:onehot encoding} )
+    """
     label_hierarchy = pd.read_csv(label_hierarchy_path,sep=';')
-    # label_hierarchy.set_index('leaf',inplace=True)
     all_labels = get_dataset_labels(label_hierarchy_path)
-    # build ancestry matrix A
-    # A[i,j] = 1 if "j" is subclass of "i"
     n = all_labels.shape[0] # number of labels
     A = np.zeros((n,n))
     indices = {label:np.where(all_labels==label)[0] for label in all_labels}
@@ -387,21 +523,15 @@ def transform_data(
         image: np.ndarray,
         args:Args,
         apply_transform: bool):
-    """transform function used in Dataloader.
+    """Transform function used in Dataloader.
 
     Args:
-        image (np.ndarray): b-scan
-        label (np.ndarray): raw manual annotation
-        args (Args): arguments parsed from Args.py which contains the configuration of the experiment.
+        image (np.ndarray): satellite image
+        args (Args): arguments parsed from args.py which contains the configuration of the experiment.
         apply_transform (bool): states if data augmentation should be enabled or not
-        layer_segmentation (np.ndarray,None): layer segmentation from Discovery
-        is_valid (bool, optional): It should be set to False only for training. Defaults to False.
-
-    Raises:
-        NotImplementedError: raised when args.resizing_mode is not in ['nearest','None'].
 
     Returns:
-        tuple: returns image and target mask as torch.tensor
+        torch.Tensor: transformed image
     """
         
     TRANSFORMS = {
@@ -522,47 +652,3 @@ class Mydataset(Dataset):
        
         return image, label
 
-def log_batch_to_wandb(
-        batch_img:torch.Tensor,
-        batch_true_label:np.ndarray,
-        batch_pred_label:np.ndarray,
-        stage: str,
-        epoch: int,
-        step: int,
-        args,
-        attention_map=None):
-
-
-    #-- unnormalize
-    mean = torch.Tensor(args.traindata_mean_4channels)
-    std = torch.Tensor(args.traindata_std_4channels)
-
-    if args.in_channels == 3:
-        mean = torch.Tensor(args.traindata_mean)
-        std = torch.Tensor(args.traindata_std)
-
-    std_inv = 1 / (std + 1e-7)
-    unnormalize = torchvision.transforms.Normalize(-mean * std_inv, std_inv)
-    
-    batch_img = unnormalize(batch_img)
-    batch_img = batch_img[:,:3,:,:].transpose(1,3) # if 4-channels, last channels Nir is dropped
-
-    # change: Tensor -> numpy
-    batch_img =  batch_img.numpy()/4e3
-
-    # -- plot
-    if attention_map is not None and stage == 'valid':
-        saliency = attention_map
-
-    # Let's log 20 sample image predictions from the first batch
-    n = min(15,batch_img.shape[0])
-    columns = ['image', 'ground truth', 'prediction']
-    data = [[wandb.Image(x_i),
-             str(y_i[y_i.nonzero()]),
-             str(y_pred[y_pred.nonzero()])] for x_i, y_i, y_pred in list(zip(batch_img[:n],
-                                                                            batch_true_label[:n],
-                                                                            batch_pred_label[:n]))]
-    wandb.log({f'Images_{stage}_epoch:{epoch}':wandb.Table(columns=columns, data=data)})            
-
-
-    return None

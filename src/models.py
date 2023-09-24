@@ -2,7 +2,6 @@ import os
 import segmentation_models_pytorch as smp
 import pytorch_lightning as pl
 import torch
-from utils import log_batch_to_wandb
 import torchvision
 from sklearn.metrics import roc_curve, precision_recall_curve
 import numpy as np
@@ -23,9 +22,6 @@ from collections import OrderedDict
 # -- lightning datamodule
 class Datamodule(pl.LightningDataModule):
     """Pytorch lightning Datamodule
-
-    Args:
-        pl (pytorch_lightning): parent module
     """
 
     def __init__(self, args):
@@ -39,7 +35,14 @@ class Datamodule(pl.LightningDataModule):
         
 
     def setup(self, stage: str):
-        
+        """Loads training, validation and test datasets
+
+        Args:
+            stage (str): either 'fit' or 'test'. 'fit' loads the training and validation datasets while 'test' loads test dataset.
+
+        Raises:
+            NotImplementedError: if stage isn't in ['fit','test']
+        """
         if stage == "fit":
             
             self.train_data = Mydataset(mode=0, args=self.args)
@@ -64,6 +67,11 @@ class Datamodule(pl.LightningDataModule):
 
 
     def train_dataloader(self):
+        """Returns training dataloader
+
+        Returns:
+            DataLoader: PyTorch Dataloader
+        """
         return DataLoader(self.train_data,
                           batch_size=self.args.batch_size,
                           num_workers=self.args.num_workers,
@@ -71,22 +79,37 @@ class Datamodule(pl.LightningDataModule):
                           shuffle=True)
 
     def val_dataloader(self):
+        """Returns validation dataloader
+
+        Returns:
+            DataLoader: PyTorch Dataloader
+        """
         return DataLoader(self.val_data,
                           batch_size=self.args.batch_size,
                           num_workers=self.args.num_workers,
                           pin_memory=self.args.pin_memory)
     
     def test_dataloader(self):
+        """Returns test dataloader
+
+        Returns:
+            DataLoader: PyTorch Dataloader
+        """
         return DataLoader(self.test_data,
                           batch_size=self.args.batch_size,
                           num_workers=self.args.num_workers,
                           pin_memory=self.args.pin_memory)
 
 # Loss funcion from 
-# ``Giunchiglia et al., Coherent Hierarchical Multi-Label Classification Networks``
 class MCloss(torch.nn.Module):
-
+    """This class implements the MCLoss presented by Giunchiglia et al. in ``Coherent Hierarchical Multi-Label Classification Networks``
+    """
     def __init__(self,args:Args) -> None:
+        """Constructor
+
+        Args:
+            args (Args): arguments parsed from Args.py which contains the configuration of the experiment.
+        """
         super().__init__()
         self.ancestryMatrix,_ = get_ancestry_matrix(args.label_hierarchy)
         self.ancestryMatrix = torch.Tensor(self.ancestryMatrix).unsqueeze(0)
@@ -97,7 +120,15 @@ class MCloss(torch.nn.Module):
         # self.use_focal = args.hierarchyloss_with_focal
 
     def forward(self,h:torch.Tensor,y:torch.Tensor):
+        """Computes loss and applies maximum contraint to logits
 
+        Args:
+            h (torch.Tensor): logits from neural network
+            y (torch.Tensor): binary target
+
+        Returns:
+            tuple: (loss, maximum contrained logits)
+        """
         h = h.sigmoid()
         mcm = self.get_mcm_constraint(h,self.ancestryMatrix)
         h_ = h*y
@@ -113,10 +144,16 @@ class MCloss(torch.nn.Module):
         
         return loss,mcm
 
-    def get_mcm_constraint(self,x,R):
-        """ Given the output of the neural network x returns the output of MCM given the hierarchy constraint expressed in the matrix R
-        https://github.com/EGiunchiglia/C-HMCNN/blob/master/main.py
-       """
+    def get_mcm_constraint(self,x:torch.Tensor,R:torch.Tensor):
+        """Given the normalized logits x returns the output of MCM given the labels hierarchy constraint expressed by the matrix R. Inspired by https://github.com/EGiunchiglia/C-HMCNN/blob/master/main.py
+
+        Args:
+            x (torch.Tensor): normalized logits i.e. x=sigmoid(logits)
+            R (Torch.TEnsor): labels hierarchy expressed by the matrix R
+
+        Returns:
+            torch.Tensor: maximum-constrained normalized logits
+        """
         c_out = x.unsqueeze(1)
         c_out = c_out.expand(len(x),R.shape[1], R.shape[1])
         R_batch = R.expand(len(x),R.shape[1], R.shape[1])
@@ -127,6 +164,11 @@ class MCloss(torch.nn.Module):
 # ``Li et al., Deep Hierarchical Semantic Segmentation``
 class TreeMinLoss(torch.nn.Module):
     def __init__(self,args:Args) -> None:
+        """Constructor
+
+        Args:
+            args (Args): arguments parsed from Args.py which contains the configuration of the experiment.
+        """
         super().__init__()
         self.ancestryMatrix,_ = get_ancestry_matrix(args.label_hierarchy)
         self.ancestryMatrix = torch.Tensor(self.ancestryMatrix).unsqueeze(0)
@@ -136,7 +178,15 @@ class TreeMinLoss(torch.nn.Module):
         self.add_dice = args.hierarchyloss_with_dice
 
     def forward(self,h:torch.Tensor,y:torch.Tensor):
+        """Returns TreeMin loss and probabilities
 
+        Args:
+            h (torch.Tensor): unnormalizd logits
+            y (torch.Tensor): target labels
+
+        Returns:
+            tuple[torch.Tensor]: (loss, probabilities)
+        """
         #- get probablities
         h = h.sigmoid()
         # hierarchy consistent probabilities
@@ -159,14 +209,25 @@ class TreeMinLoss(torch.nn.Module):
 
         return loss,probs
 
-    def check_inputs(self,probs,labels):
-        assert (labels.max() <= 1.0) and (labels.min() >= 0), f"Error in treeminloss : labels should be binary 0-1. Max={labels.max()}; Min={labels.min()}"
-        assert (probs.max() <= 1.0) and (probs.min() >= 0), f"Error in treeminloss : probs should be binary 0-1. Max={probs.max()}; Min={probs.min()}"
+    def check_inputs(self,probs:torch.Tensor,labels:torch.Tensor):
+        """Runs a series of checks on inputs. 
+
+        Args:
+            probs (torch.Tensor): probabilities
+            labels (torch.Tensor): target labels
+        """
+        assert (labels.max() <= 1.0) and (labels.min() >= 0), f"Error in treeminloss : labels should be between 0-1. Max={labels.max()}; Min={labels.min()}"
+        assert (probs.max() <= 1.0) and (probs.min() >= 0), f"Error in treeminloss : probs should be between 0-1. Max={probs.max()}; Min={probs.min()}"
     
     def get_max_constraint(self,x:torch.Tensor):
-        """ Given the output of the neural network x returns the output of MCM given the hierarchy constraint expressed in the matrix R
-        https://github.com/EGiunchiglia/C-HMCNN/blob/master/main.py
-       """
+        """Given the output of the neural network x returns the output of MCM. Inspired by https://github.com/EGiunchiglia/C-HMCNN/blob/master/main.py
+
+        Args:
+            x (torch.Tensor): normalized logits i.e. x=sigmoid(logits)
+
+        Returns:
+            torch.Tensor: maximum-constrained normalized logits
+        """
         R = self.ancestryMatrix
         c_out = x.unsqueeze(1)
         c_out = c_out.expand(len(x),R.shape[1], R.shape[1])
@@ -175,8 +236,14 @@ class TreeMinLoss(torch.nn.Module):
         return final_out.double()
     
     def get_min_constraint(self,x:torch.Tensor):
-        """ Inspired by   https://github.com/EGiunchiglia/C-HMCNN/blob/master/main.py
-       """
+        """Computes the minimum constraint. Implementation Inspired by   https://github.com/EGiunchiglia/C-HMCNN/blob/master/main.py
+
+        Args:
+            x (torch.Tensor): normalized logits i.e. x=sigmoid(logits)
+
+        Returns:
+            torch.Tensor: minimum-constrained normalized logits
+        """
         R = self.ancestryMatrix.transpose(1,2)
         c_out = x.unsqueeze(1)
         c_out = c_out.expand(len(x),R.shape[1], R.shape[1])
@@ -188,7 +255,14 @@ class TreeMinLoss(torch.nn.Module):
         return final_out.double()
 
     def get_probs(self,x:torch.Tensor):
+        """Computes probabilities
 
+        Args:
+            x (torch.Tensor): normalized logits i.e. x=sigmoid(logits)
+
+        Returns:
+            torch.Tensor: probabilities
+        """
         x = x.detach()
         R = self.ancestryMatrix
         R_ancestors = R.transpose(1,2).expand(len(x),R.shape[1], R.shape[1])
@@ -203,8 +277,14 @@ class TreeMinLoss(torch.nn.Module):
 # Loss funcion from 
 # ``Li et al., Deep Hierarchical Semantic Segmentation``
 class TripletLoss(torch.nn.Module):
-
+    """Loss funcion from ``Li et al., Deep Hierarchical Semantic Segmentation``
+    """
     def __init__(self, args:Args) -> None:
+        """Constructor
+
+        Args:
+            args (Args): arguments parsed from Args.py which contains the configuration of the experiment.
+        """
         super().__init__()
 
         self.args = args
@@ -216,7 +296,15 @@ class TripletLoss(torch.nn.Module):
         self.device = 'cpu'
     
     def forward(self,x_embeddings:torch.Tensor,labels:torch.Tensor):
+        """Computes triplet loss function
 
+        Args:
+            x_embeddings (torch.Tensor): embeddings of images
+            labels (torch.Tensor): target labels
+
+        Returns:
+            torch.Tensor: loss
+        """
         positive_indices,negative_indices,is_valid,margins,flip_pos_neg = self.build_triplet(labels)
         num_samples = labels.shape[0]
         loss = 0
@@ -241,7 +329,14 @@ class TripletLoss(torch.nn.Module):
         return loss/num_valid
     
     def build_triplet(self,labels:torch.Tensor):
+        """Creates positive and negative examples to be used in the loss function
 
+        Args:
+            labels (torch.Tensor): target labels
+
+        Returns:
+            tuple: (positive_indices, negative_indices, is_valid, margins, flip_pos_neg) 
+        """
         num_samples = labels.shape[0]
         choices = np.arange(num_samples)
         positive_indices = [choices for _ in range(num_samples)]
@@ -254,8 +349,18 @@ class TripletLoss(torch.nn.Module):
         
         return positive_indices,negative_indices,is_valid,margins,flip_pos_neg 
     
-    def select_valid_samples(self,graph,labels,positive_indices,negative_indices):
-        
+    def select_valid_samples(self,graph:nx.Graph,labels:torch.Tensor,positive_indices:list[np.ndarray],negative_indices:list[np.ndarray]):
+        """Returns 3 lists. ``is_valid``: states if a pair of positive and negative examples is usable, ``margins``: custom margin used in the loss function, ``flip_pos_neg``: states if a pair of positive and negative examples is usable when flipping position.
+
+        Args:
+            graph (nx.Graph): hierarchy graph of labels
+            labels (torch.Tensor): target labels
+            positive_indices (list[np.ndarray]): indices of positive examples
+            negative_indices (list[np.ndarray]): indices of negative examples
+
+        Returns:
+            tuple: (is_valid, margins, flip_pos_neg)
+        """
         # indicator variables
         is_valid = list()
         flip_pos_neg = list()
@@ -289,8 +394,14 @@ class TripletLoss(torch.nn.Module):
 
 # base model
 class Neuralnetwork(torch.nn.Module):
-
+    """Base neural network model
+    """
     def __init__(self, args:Args) -> None:
+        """Constructor
+
+        Args:
+            args (Args): arguments parsed from Args.py which contains the configuration of the experiment.
+        """
         super().__init__()
 
         aux_params = dict(
@@ -332,8 +443,15 @@ class Neuralnetwork(torch.nn.Module):
             print(f'\nLoading encoder weights from: {self.args.pretrained_encoder_weights}\n')
             self.load_pretrained_weights()
     
-    def forward(self,x):
+    def forward(self,x:torch.Tensor):
+        """Computes logits and embeddings of input images
 
+        Args:
+            x (torch.Tensor): Input images
+
+        Returns:
+            tuple: (predicted logits, embeddings)
+        """
         features = self.encoder(x)
         if self.args.encoder_name == 'efficientnetb3-pytorch':
             labels = features
@@ -345,7 +463,8 @@ class Neuralnetwork(torch.nn.Module):
         return labels,features
 
     def load_pretrained_weights(self,):
-
+        """Loads weights located in ``self.args.pretrained_encoder_weights`` and freezes encoder if requested
+        """
         path = Path(self.args.pretrained_encoder_weights)
         ckpts = torch.load(path,map_location='cpu')
 
@@ -361,8 +480,18 @@ class Neuralnetwork(torch.nn.Module):
 
 # custom architectures for hierarchy
 class CustomNetwork(torch.nn.Module):
-
+    """Provides an implementation of the neural network architecture defined as 'custom network' in my Master's thesis
+    """
     def __init__(self, args:Args) -> None:
+        """Constructor
+
+        Args:
+            args (Args): arguments parsed from Args.py which contains the configuration of the experiment.
+
+        Raises:
+            NotImplementedError: if requested activation function is not available
+            NotImplementedError: if strategy requested is not implemented
+        """
         super().__init__()
 
         self.args = args
@@ -426,8 +555,15 @@ class CustomNetwork(torch.nn.Module):
 
         del model
 
-    def forward(self,images):
+    def forward(self,images:torch.Tensor):
+        """Computes logits given inputs images
 
+        Args:
+            images (torch.Tensor): input images
+
+        Returns:
+            tuple: (predicted logits, embeddings)
+        """
         x_embeddings = self.encoder(images)
         x_embeddings = self.pool_and_flatten(x_embeddings[-1])
 
@@ -460,7 +596,14 @@ class CustomNetwork(torch.nn.Module):
         return y_pred_logits, x_embeddings
     
     def get_loss(self,labels:torch.Tensor):
+        """Computes loss
 
+        Args:
+            labels (torch.Tensor): targets
+
+        Returns:
+            torch.Tensor: Loss
+        """
         # get label per level
         x_1_truth = labels[:,self.indices_level1]
         x_2_truth = labels[:,self.indices_level2]
@@ -476,20 +619,18 @@ class CustomNetwork(torch.nn.Module):
                self.criterion(self.x_2,x_2_truth) +\
                self.criterion(self.x_3,x_3_truth) +\
                self.criterion(self.x_4,x_4_truth)
-        
-        # mask_level3 = torch.where(x_3_truth.abs().sum(1) != 0.0, True,False)
-        # mask_level4 = torch.where(x_4_truth.abs().sum(1) != 0.0, True,False)
-        # if mask_level3.sum().item() > 0:
-        #     loss = loss + self.criterion(self.x_3[mask_level3,:],
-        #                                 x_3_truth[mask_level3,:]) 
-        # if mask_level4.sum().item() > 0:
-        #     loss = loss + self.criterion(self.x_4[mask_level4,:],
-        #                              x_4_truth[mask_level4,:])
 
         return loss
 
     def get_probs(self,y_pred_logits:torch.Tensor):
+        """Computes prediction probabilities
 
+        Args:
+            y_pred_logits (torch.Tensor): predicted logits
+
+        Returns:
+            _type_: _description_
+        """
         y_probs = torch.zeros_like(y_pred_logits)
         y_probs[:,self.indices_level1] = torch.softmax(self.x_1,dim=1)
         y_probs[:,self.indices_level2] = torch.softmax(self.x_2,dim=1)
@@ -499,14 +640,16 @@ class CustomNetwork(torch.nn.Module):
         return y_probs
     
     def strategy_1(self) -> None:
-        # La Grassa et al., Learn Class Hierarchy using Convolutional Neural Networks
+        """Neural network architecture suggested in: La Grassa et al., Learn Class Hierarchy using Convolutional Neural Networks
+        """
         self.L1 = torch.nn.Linear(in_features=self.embeddings_size,out_features=self.level1_size)
         self.L2 = torch.nn.Linear(in_features=self.level1_size,out_features=self.level2_size)
         self.L3 = torch.nn.Linear(in_features=self.level2_size,out_features=self.level3_size)
         self.L4 = torch.nn.Linear(in_features=self.level3_size,out_features=self.level4_size)  
 
     def strategy_2(self) -> None:
-        # Cerri et al., Reduction strategies for hierarchical multi-label classification in protein function prediction
+        """Neural network architecture suggested in: Cerri et al., Reduction strategies for hierarchical multi-label classification in protein function prediction
+        """
         self.L1 = torch.nn.Linear(in_features=self.embeddings_size,
                                   out_features=self.level1_size)
         self.L2 = torch.nn.Linear(in_features=self.level1_size + self.embeddings_size,
@@ -517,7 +660,7 @@ class CustomNetwork(torch.nn.Module):
                                   out_features=self.level4_size)
     
     def strategy_3(self,) -> None:
-        # personal idea
+        """A combintation of the previous suggested neural network architectures"""
         self.L1 = torch.nn.Linear(in_features=self.embeddings_size,
                                   out_features=self.level1_size)
         self.L2 = torch.nn.Linear(in_features=self.level1_size + self.embeddings_size,
@@ -529,7 +672,8 @@ class CustomNetwork(torch.nn.Module):
 
 # -- Pytorch lightning model
 class Architecture(pl.LightningModule):
-    
+    """Class which handles the model training routine using Pytorch Lightning
+    """
     def __init__(self, args:Args):
         """Constructor.
 
@@ -643,9 +787,16 @@ class Architecture(pl.LightningModule):
         self.treeminloss = TreeMinLoss(args=self.args)
         self.treeTripletloss = TripletLoss(args=self.args)
    
-    def forward(self, image):
+    def forward(self, image:torch.Tensor):
+        """Runs forward function of the neural network
 
-        # assign correct device
+        Args:
+            image (torch.Tensor): _description_
+
+        Returns:
+            tuple: (predicted logits, embeddings)
+        """
+        # move to device if needed
         if self.args.model_name != 'baseline':
             if self.device != self.mcloss.ancestryMatrix.device or self.device != self.treeminloss.ancestryMatrix.device:
                 self.mcloss.ancestryMatrix = self.mcloss.ancestryMatrix.to(self.device)
@@ -660,7 +811,13 @@ class Architecture(pl.LightningModule):
 
         return self.model(image)
 
-    def check_inputs(self,images,labels):
+    def check_inputs(self,images:torch.Tensor,labels:torch.Tensor):
+        """Performs checks on inputs and targets
+
+        Args:
+            images (torch.Tensor): satellite images
+            labels (torch.Tensor): class targets
+        """
         assert images.ndim == 4
         h, w = images.shape[-2:]
         assert h % 32 == 0 and w % 32 == 0
@@ -669,7 +826,22 @@ class Architecture(pl.LightningModule):
             assert (labels.max() <= 1.0 or self.args.use_mixup) and labels.min(
             ) >= 0, "labels should be binary 0-1"
     
-    def get_loss(self,logits_labels,labels,embeddings,stage):
+    def get_loss(self,logits_labels:torch.Tensor,labels:torch.Tensor,embeddings:torch.Tensor,stage:str):
+        """Computes loss
+
+        Args:
+            logits_labels (torch.Tensor): predicted logits
+            labels (torch.Tensor): targets  
+            embeddings (torch.Tensor): embeddings of images
+            stage (str): either 'train', 'valid' or 'test'
+
+        Raises:
+            NotImplementedError: If the loss function requested is not available
+
+        Returns:
+            tuple: (loss, predicted labels probability) - if criterion in ['mcloss','treeminloss','treemin+triplet']
+            torch.Tensor: loss - else
+        """
         loss = 0
         if  self.args.model_name == 'customArch' and self.args.customArch_useOtherLosses == False:
             # compute loss as explained in publications
@@ -727,8 +899,17 @@ class Architecture(pl.LightningModule):
         # assert not torch.isnan(loss), "NaN detected in loss"
         return loss        
 
-    def shared_step(self, batch, stage, batch_idx):
+    def shared_step(self, batch:tuple, stage:str, batch_idx:int):
+        """Runs computes loss, predicted labels, and evaluation metrics for a given batch
 
+        Args:
+            batch (tuple): (images,labels)
+            stage (str): either 'train', 'valid' or 'test'
+            batch_idx (int): batch index in dataloader
+
+        Returns:
+            torch:Tensor: loss
+        """
         images, labels = batch
         labels = labels.float()
         # select labels for baseline
@@ -814,8 +995,14 @@ class Architecture(pl.LightningModule):
                 
         return loss
 
-    def shared_epoch_end(self, outputs, stage):
+    def shared_epoch_end(self, outputs:list[tuple], stage:str):
+        """Computes metrics at the end of an epoch
 
+        Args:
+            outputs (list): a list of tuple containing pairs of (predicted probability of label, predicted label)
+            stage (str): either 'train', 'valid' or 'test'
+
+        """
         if self.args.criterion == "treetriplet":
             # no need to compute metrics
             return None
@@ -851,46 +1038,85 @@ class Architecture(pl.LightningModule):
             except Exception as e:
                 print('The metrics could not be computed -> ',e)
 
-        return None
+    def training_step(self, batch:tuple, batch_idx:int):   
+        """Runs a training step
 
-    def training_step(self, batch, batch_idx):        
+        Args:
+            batch (tuple): (images,labels)
+            batch_idx (int): batch index in dataloader
+
+        Returns:
+            torch.Tensor: loss
+        """
         return self.shared_step(batch, "train", batch_idx)
 
     def on_training_epoch_end(self):
+        """Computes specific evaluation metrics at the end of an epoch
+        """
         out = self.shared_epoch_end(self.training_step_outputs, "train")
         self.training_step_outputs.clear()
-
         return out
 
-    def validation_step(self, batch, batch_idx):
+    def validation_step(self, batch:tuple, batch_idx:int):
+        """Runs a validation step
+
+        Args:
+            batch (tuple): (images,labels)
+            batch_idx (int): batch index in dataloader
+
+        Returns:
+            torch.Tensor: loss
+        """
         return self.shared_step(batch, "valid", batch_idx)
 
     def on_validation_epoch_end(self):
+        """Computes specific evaluation metrics at the end of an epoch
+        """
         out = self.shared_epoch_end(self.validation_step_outputs, "valid")
         self.validation_step_outputs.clear()
-        return out
 
-    def test_step(self, batch, batch_idx):
+    def test_step(self, batch:tuple, batch_idx:int):
+        """Runs a testing step 
+
+        Args:
+            batch (tuple): (images,labels)
+            batch_idx (int): batch index in dataloader
+
+        Returns:
+            torch.Tensor: loss
+        """
         return self.shared_step(batch, "test",batch_idx)
     
     def on_test_epoch_end(self):
+        """Computes specific evaluation metrics at the end of an epoch
+        """
         self.shared_epoch_end(self.test_step_outputs, "test")
         self.test_step_outputs.clear()
 
-    def predict_step(self, batch, batch_idx):
+    def predict_step(self, batch, batch_idx:int):
+        """Prediction step on a batch
 
+        Args:
+            batch (tuple or torch.Tensor): (images,...) or images
+            batch_idx (int): batch index in dataloader
+
+        Returns:
+            tuple: (predicted logits, embeddings)
+        """
         if isinstance(batch,tuple) or isinstance(batch,list):
             images,_ = batch
         else:
             images = batch
         logits_labels,embeddings = self.forward(images)
         
-        #pred = (logits_labels.sigmoid() > self.threshold_prediction).float()
-
         return logits_labels,embeddings
 
     def configure_optimizers(self):
+        """Configured the optimizers and learning schedulers
 
+        Returns:
+            dict: information of optimizer used and learning schedulers
+        """
         opt = torch.optim.Adam(
             self.parameters(),
             lr=self.args.lr,
@@ -1009,7 +1235,11 @@ def train(args:Args):
     trainer.test(model=model,dataloaders=data,ckpt_path='best')
 
 def test(args:Args):
+    """testing routine
 
+    Args:
+        args (Args): arguments parsed from Args.py which contains the configuration of the experiment.
+    """
     pl.seed_everything(args.seed, workers=True)  # -- for reproducibility
 
     # -- Create model
